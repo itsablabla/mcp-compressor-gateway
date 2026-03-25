@@ -303,6 +303,13 @@ def create_app() -> Starlette:
         sub_apps.append(({"name":"blinko","mount":"/blinko","url":BLINKO_URL}, blinko_app))
         logger.info("Added Blinko native MCP to sub_apps")
 
+    # Add native mem0 MCP (same pattern as blinko)
+    mem0_mcp, _ = create_mem0_mcp()
+    if mem0_mcp:
+        mem0_app = mem0_mcp.http_app(path="/mcp", stateless_http=True)
+        sub_apps.append(({"name":"mem0","mount":"/mem0","url":"https://api.mem0.ai/"}, mem0_app))
+        logger.info("Added mem0 native MCP to sub_apps")
+
     # Add native Arcade MCP gateway
     arcade_mcp, _ = create_arcade_mcp()
     if arcade_mcp:
@@ -371,11 +378,6 @@ def create_app() -> Starlette:
         mount_path = config["mount"]
         routes.append(Mount(mount_path, app=mcp_app))
         logger.info(f"Mounted {config['name']} at {mount_path}/mcp")
-
-    # Mount mem0 standalone
-    if _mem0_app:
-        routes.append(Mount("/mem0", app=_mem0_app))
-        logger.info("Mounted mem0 at /mem0/mcp")
 
     app = Starlette(routes=routes, lifespan=combined_lifespan)
     return app
