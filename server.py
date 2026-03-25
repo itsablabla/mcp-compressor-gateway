@@ -372,11 +372,10 @@ def create_app() -> Starlette:
         routes.append(Mount(mount_path, app=mcp_app))
         logger.info(f"Mounted {config['name']} at {mount_path}/mcp")
 
-    # Mount mem0 standalone (no lifespan management needed)
-    if mem0_extra:
-        config, mcp_app = mem0_extra
-        routes.append(Mount(config["mount"], app=mcp_app))
-        logger.info(f"Mounted mem0 at {config['mount']}/mcp")
+    # Mount mem0 standalone
+    if _mem0_app:
+        routes.append(Mount("/mem0", app=_mem0_app))
+        logger.info("Mounted mem0 at /mem0/mcp")
 
     app = Starlette(routes=routes, lifespan=combined_lifespan)
     return app
