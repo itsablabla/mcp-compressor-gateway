@@ -133,7 +133,8 @@ def create_mem0_mcp():
                 headers={"Authorization": f"Token {key}", "Content-Type": "application/json"},
                 json={"query": query, "user_id": user_id, "limit": limit}
             )
-            return r.json()
+            data = r.json()
+            return {"results": data} if isinstance(data, list) else data
 
     @mcp.tool()
     async def mem0_list_memories(limit: int = 20) -> dict:
@@ -143,7 +144,8 @@ def create_mem0_mcp():
                 f"https://api.mem0.ai/v1/memories/?user_id={user_id}&limit={limit}",
                 headers={"Authorization": f"Token {key}"}
             )
-            return r.json()
+            data = r.json()
+            return {"memories": data} if isinstance(data, list) else data
 
     return mcp, None
 
