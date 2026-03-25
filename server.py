@@ -43,6 +43,8 @@ BASEROW_URL = os.environ.get("BASEROW_URL", "https://api.baserow.io/mcp/NCyMcJmd
 BW_AUTH = os.environ.get("BW_AUTH", "garza-bw-mcp-2026")
 BLINKO_URL = os.environ.get("BLINKO_URL", "")
 BLINKO_TOKEN = os.environ.get("BLINKO_TOKEN", "")
+ARCADE_API_KEY = os.environ.get("ARCADE_API_KEY", "")
+ARCADE_USER_ID = os.environ.get("ARCADE_USER_ID", "jadengarza@pm.me")
 
 # Compute Close Basic auth
 close_auth = base64.b64encode(f"{CLOSE_API_KEY}:".encode()).decode()
@@ -96,6 +98,25 @@ def create_blinko_mcp() -> FastMCP | None:
             return r.json()
 
     return mcp
+
+
+
+def create_arcade_mcp() -> tuple:
+    """Create a native FastMCP server for Arcade gateway."""
+    key = ARCADE_API_KEY
+    user_id = ARCADE_USER_ID
+    if not key:
+        return None, None
+    
+    from fastmcp.client.transports import StreamableHttpTransport
+    
+    transport = StreamableHttpTransport(
+        url="https://api.arcade.dev/mcp/garza-tools",
+        headers={"Authorization": f"Bearer {key}", "Arcade-User-ID": user_id}
+    )
+    
+    mcp = FastMCP.as_proxy(backend=transport, name="Arcade MCP Gateway", version="0.1.0")
+    return mcp, transport
 
 def get_mcp_configs():
     return [
@@ -211,6 +232,13 @@ def create_app() -> Starlette:
         blinko_app = blinko_mcp.http_app(path="/mcp", stateless_http=True)
         sub_apps.append(({"name":"blinko","mount":"/blinko","url":BLINKO_URL}, blinko_app))
         logger.info("Added Blinko native MCP to sub_apps")
+
+    # Add native Arcade MCP gateway
+    arcade_mcp, _ = create_arcade_mcp()
+    if arcade_mcp:
+        arcade_app = arcade_mcp.http_app(path="/mcp", stateless_http=True)
+        sub_apps.append(({"name":"arcade","mount":"/arcade","url":"https://api.arcade.dev/mcp/garza-tools"}, arcade_app))
+        logger.info("Added Arcade native MCP to sub_apps")
 
     # Create combined lifespan that activates each sub-app's lifespan
     sub_app_list = [app for _, app in sub_apps]
