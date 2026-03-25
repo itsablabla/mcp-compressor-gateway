@@ -46,6 +46,10 @@ BLINKO_TOKEN = os.environ.get("BLINKO_TOKEN", "")
 ARCADE_API_KEY = os.environ.get("ARCADE_API_KEY", "")
 MEM0_API_KEY = os.environ.get("MEM0_API_KEY", "")
 FIREFLIES_API_KEY = os.environ.get("FIREFLIES_API_KEY", "")
+HUBSPOT_ACCESS_TOKEN = os.environ.get("HUBSPOT_ACCESS_TOKEN", "")
+HUBSPOT_REFRESH_TOKEN = os.environ.get("HUBSPOT_REFRESH_TOKEN", "")
+HUBSPOT_CLIENT_ID = os.environ.get("HUBSPOT_CLIENT_ID", "d6c691af-8578-4be4-aecf-93bea6b06e9e")
+HUBSPOT_CLIENT_SECRET = os.environ.get("HUBSPOT_CLIENT_SECRET", "cfd8417b-a5bd-4cbd-b989-453ef38df741")
 MEM0_USER_ID = os.environ.get("MEM0_USER_ID", "jadengarza")
 ARCADE_USER_ID = os.environ.get("ARCADE_USER_ID", "jadengarza@pm.me")
 
@@ -180,6 +184,62 @@ def create_fireflies_mcp():
             q = query.lower()
             matches = [t for t in transcripts if q in (t.get("title","") or "").lower()]
             return {"results": matches or transcripts[:5]}
+
+    return mcp, None
+
+
+def create_hubspot_mcp():
+    """Create HubSpot CRM native FastMCP."""
+    access_token = HUBSPOT_ACCESS_TOKEN
+    refresh_token = HUBSPOT_REFRESH_TOKEN
+    if not access_token and not refresh_token:
+        return None, None
+
+    # Get fresh token if needed
+    _token = [access_token]
+
+    async def get_token():
+        if _token[0]:
+            return _token[0]
+        async with httpx.AsyncClient() as c:
+            r = await c.post("https://api.hubapi.com/oauth/v1/token",
+                data={"grant_type":"refresh_token","client_id":HUBSPOT_CLIENT_ID,
+                      "client_secret":HUBSPOT_CLIENT_SECRET,"refresh_token":refresh_token})
+            _token[0] = r.json().get("access_token","")
+            return _token[0]
+
+    mcp = FastMCP(name="hubspot", instructions="HubSpot CRM — search contacts, companies, deals, owners.")
+
+    @mcp.tool()
+    async def hubspot_search_contacts(query: str, limit: int = 10) -> dict:
+        """Search HubSpot CRM contacts."""
+        token = await get_token()
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post("https://api.hubapi.com/crm/v3/objects/contacts/search",
+                headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"},
+                json={"query":query,"limit":limit,"properties":["email","firstname","lastname","phone","company"]})
+            d = r.json()
+            return {"results": d.get("results",[]), "total": d.get("total",0)}
+
+    @mcp.tool()
+    async def hubspot_search_companies(query: str, limit: int = 10) -> dict:
+        """Search HubSpot CRM companies."""
+        token = await get_token()
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post("https://api.hubapi.com/crm/v3/objects/companies/search",
+                headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"},
+                json={"query":query,"limit":limit,"properties":["name","domain","industry","phone"]})
+            return {"results": r.json().get("results",[]), "total": r.json().get("total",0)}
+
+    @mcp.tool()
+    async def hubspot_search_deals(query: str, limit: int = 10) -> dict:
+        """Search HubSpot CRM deals."""
+        token = await get_token()
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post("https://api.hubapi.com/crm/v3/objects/deals/search",
+                headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"},
+                json={"query":query,"limit":limit,"properties":["dealname","amount","dealstage","closedate"]})
+            return {"results": r.json().get("results",[]), "total": r.json().get("total",0)}
 
     return mcp, None
 
@@ -352,6 +412,13 @@ def create_app() -> Starlette:
         ff_app = ff_mcp.http_app(path="/mcp", stateless_http=True)
         sub_apps.append(({"name":"fireflies","mount":"/fireflies","url":"https://api.fireflies.ai/"}, ff_app))
         logger.info("Added Fireflies MCP to sub_apps")
+
+    # Add HubSpot CRM MCP
+    hs_mcp, _ = create_hubspot_mcp()
+    if hs_mcp:
+        hs_app = hs_mcp.http_app(path="/mcp", stateless_http=True)
+        sub_apps.append(({"name":"hubspot","mount":"/hubspot","url":"https://api.hubapi.com/"}, hs_app))
+        logger.info("Added HubSpot CRM MCP to sub_apps")
 
     # Add native Arcade MCP gateway
     arcade_mcp, _ = create_arcade_mcp()
