@@ -105,19 +105,47 @@ def create_blinko_mcp() -> FastMCP | None:
 
 
 def create_mem0_mcp():
-    """Create native mem0 FastMCP server."""
+    """Create mem0 FastMCP with 2-tool interface."""
     key = MEM0_API_KEY
     user_id = MEM0_USER_ID
     if not key:
         return None, None
 
-    from fastmcp.client.transports import StreamableHttpTransport
-    transport = StreamableHttpTransport(
-        url="https://mcp.mem0.ai/mcp/",
-        headers={"Authorization": f"Bearer {key}"}
-    )
-    mcp = FastMCP.as_proxy(backend=transport, name="mem0", version="0.1.0")
-    return mcp, transport
+    mcp = FastMCP(name="mem0", instructions="Mem0 personal memory. Store and retrieve memories for jadengarza.")
+
+    @mcp.tool()
+    async def mem0_add_memory(text: str, metadata: dict = {}) -> dict:
+        """Add a memory to Mem0 for later retrieval."""
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                "https://api.mem0.ai/v1/memories/",
+                headers={"Authorization": f"Token {key}", "Content-Type": "application/json"},
+                json={"messages": [{"role": "user", "content": text}], "user_id": user_id, "metadata": metadata}
+            )
+            return r.json()
+
+    @mcp.tool()
+    async def mem0_search_memory(query: str, limit: int = 5) -> dict:
+        """Search memories in Mem0."""
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                "https://api.mem0.ai/v1/memories/search/",
+                headers={"Authorization": f"Token {key}", "Content-Type": "application/json"},
+                json={"query": query, "user_id": user_id, "limit": limit}
+            )
+            return r.json()
+
+    @mcp.tool()
+    async def mem0_list_memories(limit: int = 20) -> dict:
+        """List all memories stored in Mem0."""
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"https://api.mem0.ai/v1/memories/?user_id={user_id}&limit={limit}",
+                headers={"Authorization": f"Token {key}"}
+            )
+            return r.json()
+
+    return mcp, None
 
 def create_arcade_mcp():
     """Create a native FastMCP server for Arcade gateway with cached tools."""
