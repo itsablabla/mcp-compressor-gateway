@@ -101,22 +101,46 @@ def create_blinko_mcp() -> FastMCP | None:
 
 
 
-def create_arcade_mcp() -> tuple:
-    """Create a native FastMCP server for Arcade gateway."""
+def create_arcade_mcp():
+    """Create a native FastMCP server for Arcade gateway with cached tools."""
     key = ARCADE_API_KEY
     user_id = ARCADE_USER_ID
     if not key:
         return None, None
-    
-    from fastmcp.client.transports import StreamableHttpTransport
-    
-    transport = StreamableHttpTransport(
-        url="https://api.arcade.dev/mcp/garza-tools",
-        headers={"Authorization": f"Bearer {key}", "Arcade-User-ID": user_id}
-    )
-    
-    mcp = FastMCP.as_proxy(backend=transport, name="Arcade MCP Gateway", version="0.1.0")
-    return mcp, transport
+
+    mcp = FastMCP(name="arcade", instructions="Arcade MCP Gateway with GitHub, Gmail, Google Calendar, Slack, Firecrawl and more tools.")
+
+    @mcp.tool()
+    async def arcade_get_tool_schema(tool_name: str) -> dict:
+        """Get the input schema for a specific Arcade tool. Call this before invoke_tool to understand parameters."""
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"https://api.arcade.dev/v1/tools/{tool_name}",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=15
+            )
+            if r.status_code != 200:
+                return {"error": f"Tool not found: {tool_name}"}
+            return r.json()
+
+    @mcp.tool()
+    async def arcade_invoke_tool(tool_name: str, tool_input: dict = {}) -> dict:
+        """Execute an Arcade tool. Available tools include GitHub, Gmail, GoogleCalendar, Slack, Firecrawl and more.
+        
+        Popular tools: Github_CreateIssue, Github_SearchRepositories, Gmail_SendEmail, Gmail_SearchEmails,
+        GoogleCalendar_CreateEvent, GoogleCalendar_ListEvents, Slack_SendMessage, Firecrawl_ScrapeUrl,
+        Search_SearchWeb, Search_SearchGoogle
+        """
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                "https://api.arcade.dev/v1/tools/execute",
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={"tool_name": tool_name, "inputs": tool_input, "user_id": user_id},
+                timeout=30
+            )
+            return r.json()
+
+    return mcp, None
 
 def get_mcp_configs():
     return [
