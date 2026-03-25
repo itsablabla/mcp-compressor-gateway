@@ -101,90 +101,44 @@ def create_blinko_mcp() -> FastMCP | None:
 
 
 
-_arcade_tools_cache = None
-_arcade_tools_lock = None
-
-async def _get_arcade_tools_cached(key: str, user_id: str):
-    """Fetch Arcade tools once and cache them in memory."""
-    global _arcade_tools_cache, _arcade_tools_lock
-    import asyncio
-    if _arcade_tools_lock is None:
-        _arcade_tools_lock = asyncio.Lock()
-    async with _arcade_tools_lock:
-        if _arcade_tools_cache is not None:
-            return _arcade_tools_cache
-        # Initialize session
-        async with httpx.AsyncClient(timeout=30) as client:
-            r = await client.post(
-                "https://api.arcade.dev/mcp/garza-tools",
-                headers={"Authorization": f"Bearer {key}", "Arcade-User-ID": user_id,
-                         "Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
-                content=json.dumps({"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"gateway","version":"1.0"}},"id":1})
-            )
-            session_id = r.headers.get("mcp-session-id","")
-            # Get tools with session
-            r2 = await client.post(
-                "https://api.arcade.dev/mcp/garza-tools",
-                headers={"Authorization": f"Bearer {key}", "Arcade-User-ID": user_id,
-                         "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
-                         "Mcp-Session-Id": session_id},
-                content=json.dumps({"jsonrpc":"2.0","method":"tools/list","params":{},"id":2})
-            )
-            for line in r2.text.split("
-"):
-                if line.startswith("data:"):
-                    d = json.loads(line[5:])
-                    tools = d.get("result",{}).get("tools",[])
-                    if tools:
-                        _arcade_tools_cache = {"session_id": session_id, "tools": tools}
-                        logger.info(f"Cached {len(tools)} Arcade tools")
-                        return _arcade_tools_cache
-    return {"session_id": "", "tools": []}
-
-
 def create_arcade_mcp():
-    """Create Arcade MCP with pre-cached tools for fast startup."""
+    """Create a native FastMCP server for Arcade gateway with cached tools."""
     key = ARCADE_API_KEY
     user_id = ARCADE_USER_ID
     if not key:
         return None, None
 
-    mcp = FastMCP(name="arcade", instructions="Arcade MCP Gateway — GitHub, Gmail, Google Calendar, Slack, Firecrawl, Search and more. Use arcade_list_tools to discover, then arcade_invoke to execute.")
+    mcp = FastMCP(name="arcade", instructions="Arcade MCP Gateway with GitHub, Gmail, Google Calendar, Slack, Firecrawl and more tools.")
 
     @mcp.tool()
-    async def arcade_list_tools() -> list:
-        """List all available Arcade tools with their names and descriptions."""
-        cache = await _get_arcade_tools_cached(key, user_id)
-        return [{"name": t["name"], "description": t.get("description","")[:100]} for t in cache["tools"]]
+    async def arcade_get_tool_schema(tool_name: str) -> dict:
+        """Get the input schema for a specific Arcade tool. Call this before invoke_tool to understand parameters."""
+        async with httpx.AsyncClient() as client:
+            r = await client.get(
+                f"https://api.arcade.dev/v1/tools/{tool_name}",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=15
+            )
+            if r.status_code != 200:
+                return {"error": f"Tool not found: {tool_name}"}
+            return r.json()
 
     @mcp.tool()
-    async def arcade_invoke(tool_name: str, inputs: dict = {}) -> dict:
-        """Execute any Arcade tool. Popular: Github_CreateIssue, Gmail_SendEmail, GoogleCalendar_CreateEvent, Slack_SendMessage, Firecrawl_ScrapeUrl, Search_SearchWeb"""
-        cache = await _get_arcade_tools_cached(key, user_id)
-        session_id = cache.get("session_id","")
-        # Need fresh session for execute calls
-        async with httpx.AsyncClient(timeout=30) as client:
-            # Get fresh session
+    async def arcade_invoke_tool(tool_name: str, tool_input: dict = {}) -> dict:
+        """Execute an Arcade tool. Available tools include GitHub, Gmail, GoogleCalendar, Slack, Firecrawl and more.
+        
+        Popular tools: Github_CreateIssue, Github_SearchRepositories, Gmail_SendEmail, Gmail_SearchEmails,
+        GoogleCalendar_CreateEvent, GoogleCalendar_ListEvents, Slack_SendMessage, Firecrawl_ScrapeUrl,
+        Search_SearchWeb, Search_SearchGoogle
+        """
+        async with httpx.AsyncClient() as client:
             r = await client.post(
-                "https://api.arcade.dev/mcp/garza-tools",
-                headers={"Authorization": f"Bearer {key}", "Arcade-User-ID": user_id,
-                         "Content-Type": "application/json", "Accept": "application/json, text/event-stream"},
-                content=json.dumps({"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"gateway","version":"1.0"}},"id":1})
+                "https://api.arcade.dev/v1/tools/execute",
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={"tool_name": tool_name, "inputs": tool_input, "user_id": user_id},
+                timeout=30
             )
-            new_session = r.headers.get("mcp-session-id","")
-            # Call tool
-            r2 = await client.post(
-                "https://api.arcade.dev/mcp/garza-tools",
-                headers={"Authorization": f"Bearer {key}", "Arcade-User-ID": user_id,
-                         "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
-                         "Mcp-Session-Id": new_session},
-                content=json.dumps({"jsonrpc":"2.0","method":"tools/call","params":{"name":tool_name,"arguments":inputs},"id":3})
-            )
-            for line in r2.text.split("
-"):
-                if line.startswith("data:"):
-                    return json.loads(line[5:]).get("result",{})
-        return {"error": "no response"}
+            return r.json()
 
     return mcp, None
 
@@ -303,12 +257,12 @@ def create_app() -> Starlette:
         sub_apps.append(({"name":"blinko","mount":"/blinko","url":BLINKO_URL}, blinko_app))
         logger.info("Added Blinko native MCP to sub_apps")
 
-    # Add native Arcade MCP gateway via mcp-remote stdio proxy
+    # Add native Arcade MCP gateway
     arcade_mcp, _ = create_arcade_mcp()
     if arcade_mcp:
         arcade_app = arcade_mcp.http_app(path="/mcp", stateless_http=True)
         sub_apps.append(({"name":"arcade","mount":"/arcade","url":"https://api.arcade.dev/mcp/garza-tools"}, arcade_app))
-        logger.info("Added Arcade stdio proxy to sub_apps")
+        logger.info("Added Arcade native MCP to sub_apps")
 
     # Create combined lifespan that activates each sub-app's lifespan
     sub_app_list = [app for _, app in sub_apps]
