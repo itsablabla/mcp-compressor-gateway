@@ -2,6 +2,12 @@
 MCP Compressor Gateway
 A single HTTP server that wraps multiple MCP servers with compression,
 exposing each on a different path.
+
+Architecture:
+- Each MCP server is wrapped by mcp-compressor (FastMCP proxy + CompressedTools)
+- Each gets exposed as a Starlette sub-app via FastMCP's http_app()
+- All sub-apps are mounted into a single Starlette app using Mount()
+- The parent app's lifespan triggers each sub-app's lifespan
 """
 
 import asyncio
@@ -23,7 +29,7 @@ from mcp_compressor.types import CompressionLevel
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.routing import Route
+from starlette.routing import Mount, Route
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger(__name__)
@@ -42,42 +48,42 @@ def get_mcp_configs():
     return [
         {
             "name": "digitalocean-apps",
-            "path": "/digitalocean-apps/mcp",
+            "mount": "/digitalocean-apps",
             "url": "https://apps.mcp.digitalocean.com/mcp",
             "headers": {"Authorization": f"Bearer {DO_TOKEN}"},
             "transport": "http",
         },
         {
             "name": "digitalocean-droplets",
-            "path": "/digitalocean-droplets/mcp",
+            "mount": "/digitalocean-droplets",
             "url": "https://droplets.mcp.digitalocean.com/mcp",
             "headers": {"Authorization": f"Bearer {DO_TOKEN}"},
             "transport": "http",
         },
         {
             "name": "digitalocean-databases",
-            "path": "/digitalocean-databases/mcp",
+            "mount": "/digitalocean-databases",
             "url": "https://databases.mcp.digitalocean.com/mcp",
             "headers": {"Authorization": f"Bearer {DO_TOKEN}"},
             "transport": "http",
         },
         {
             "name": "close-crm",
-            "path": "/close/mcp",
+            "mount": "/close",
             "url": "https://mcp.close.com/mcp",
             "headers": {"Authorization": f"Basic {close_auth}"},
             "transport": "http",
         },
         {
             "name": "baserow",
-            "path": "/baserow/mcp",
+            "mount": "/baserow",
             "url": BASEROW_URL,
             "headers": {},
             "transport": "sse",
         },
         {
             "name": "tavily",
-            "path": "/tavily/mcp",
+            "mount": "/tavily",
             "url": "https://mcp.tavily.com/mcp",
             "headers": {"Authorization": f"Bearer {TAVILY_TOKEN}"},
             "transport": "http",
@@ -85,7 +91,7 @@ def get_mcp_configs():
     ]
 
 
-async def build_compressed_app(config: dict) -> tuple[Any, str | None]:
+async def build_compressed_mcp_app(config: dict) -> tuple[Any, str | None]:
     """Build a compressed FastMCP ASGI app for a given MCP config."""
     name = config["name"]
     url = config["url"]
@@ -112,118 +118,94 @@ async def build_compressed_app(config: dict) -> tuple[Any, str | None]:
         )
         await compressed_tools.configure_server()
 
-        # Build ASGI app
-        app = mcp.http_app(path="/mcp", transport="streamable-http", stateless_http=True)
+        # Build ASGI app - stateless_http=True for Railway (no persistent sessions)
+        mcp_app = mcp.http_app(path="/mcp", transport="streamable-http", stateless_http=True)
         logger.info(f"Successfully built compressed app for {name}")
-        return app, None
+        return mcp_app, None
     except Exception as e:
-        logger.error(f"Failed to build compressed app for {name}: {e}")
+        logger.error(f"Failed to build compressed app for {name}: {e}", exc_info=True)
         return None, str(e)
-
-
-async def health(request: Request) -> JSONResponse:
-    return JSONResponse({"status": "ok", "service": "mcp-compressor-gateway"})
-
-
-async def index(request: Request) -> JSONResponse:
-    mcp_configs = get_mcp_configs()
-    endpoints = []
-    for config in mcp_configs:
-        endpoints.append({
-            "name": config["name"],
-            "path": config["path"],
-            "upstream": config["url"],
-            "status": "online" if config["name"] in _mounted_apps else "error",
-            "error": _build_errors.get(config["name"]),
-        })
-    return JSONResponse({
-        "service": "MCP Compressor Gateway",
-        "description": "Wraps multiple MCP servers with token compression",
-        "online": len(_mounted_apps),
-        "total": len(mcp_configs),
-        "endpoints": endpoints,
-    })
-
-
-# Global dict of mounted apps - built at startup
-_mounted_apps: dict[str, Any] = {}
-_build_errors: dict[str, str] = {}
-
-
-@asynccontextmanager
-async def lifespan(app: Starlette):
-    """Build all compressed apps on startup."""
-    logger.info("Starting MCP Compressor Gateway...")
-    mcp_configs = get_mcp_configs()
-
-    for config in mcp_configs:
-        name = config["name"]
-        logger.info(f"Building {name}...")
-        compressed_app, error = await build_compressed_app(config)
-        if compressed_app is not None:
-            _mounted_apps[name] = compressed_app
-            logger.info(f"✓ {name} ready")
-        else:
-            _build_errors[name] = error
-            logger.warning(f"✗ {name} failed: {error}")
-
-    logger.info(f"Gateway ready: {len(_mounted_apps)}/{len(mcp_configs)} MCPs online")
-    yield
-    logger.info("Shutting down MCP Compressor Gateway...")
-
-
-class MCPRouterMiddleware:
-    """Routes MCP requests to the appropriate compressed sub-app."""
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] in ("http", "lifespan"):
-            path = scope.get("path", "")
-            mcp_configs = get_mcp_configs()
-
-            for config in mcp_configs:
-                route_path = config["path"]  # e.g., /digitalocean-apps/mcp
-                name = config["name"]
-                # Get the prefix (everything before /mcp)
-                prefix = route_path.rsplit("/mcp", 1)[0]  # e.g., /digitalocean-apps
-
-                if path == route_path or path.startswith(route_path + "/") or path.startswith(prefix + "/mcp"):
-                    sub_app = _mounted_apps.get(name)
-                    if sub_app is not None:
-                        # Strip the prefix so sub-app sees /mcp/...
-                        new_path = path[len(prefix):] or "/"
-                        new_scope = dict(scope)
-                        new_scope["path"] = new_path
-                        new_scope["raw_path"] = new_path.encode()
-                        root_path = scope.get("root_path", "")
-                        new_scope["root_path"] = root_path + prefix
-                        await sub_app(new_scope, receive, send)
-                        return
-                    else:
-                        error = _build_errors.get(name, "Unknown error")
-                        async def error_response(scope, receive, send, err=error, n=name):
-                            response = JSONResponse(
-                                {"error": f"MCP {n} not available: {err}"},
-                                status_code=503
-                            )
-                            await response(scope, receive, send)
-                        await error_response(scope, receive, send)
-                        return
-
-        await self.app(scope, receive, send)
 
 
 def create_app() -> Starlette:
     """Create the main Starlette application with all MCP routes."""
+    mcp_configs = get_mcp_configs()
+
+    # Build all sub-apps synchronously
+    sub_apps: list[tuple[dict, Any]] = []
+    failed_apps: list[tuple[dict, str]] = []
+
+    async def build_all():
+        for config in mcp_configs:
+            app, error = await build_compressed_mcp_app(config)
+            if app is not None:
+                sub_apps.append((config, app))
+            else:
+                failed_apps.append((config, error or "unknown error"))
+
+    asyncio.run(build_all())
+
+    # Create combined lifespan that activates each sub-app's lifespan
+    sub_app_list = [app for _, app in sub_apps]
+
+    @asynccontextmanager
+    async def combined_lifespan(app: Starlette):
+        # Nested context managers for all sub-apps
+        async def enter_all(apps, index=0):
+            if index >= len(apps):
+                yield
+                return
+            async with apps[index].lifespan(apps[index]):
+                async for _ in enter_all(apps, index + 1):
+                    yield
+
+        async for _ in enter_all(sub_app_list):
+            logger.info(f"All {len(sub_app_list)} MCP sub-apps started")
+            yield
+
+    async def index(request: Request) -> JSONResponse:
+        endpoints = []
+        for config, _ in sub_apps:
+            endpoints.append({
+                "name": config["name"],
+                "mcp_url": config["mount"] + "/mcp",
+                "upstream": config["url"],
+                "status": "online",
+            })
+        for config, error in failed_apps:
+            endpoints.append({
+                "name": config["name"],
+                "mcp_url": config["mount"] + "/mcp",
+                "upstream": config["url"],
+                "status": "error",
+                "error": error,
+            })
+        return JSONResponse({
+            "service": "MCP Compressor Gateway",
+            "description": "Wraps multiple MCP servers with token compression (70-95% token reduction)",
+            "online": len(sub_apps),
+            "failed": len(failed_apps),
+            "endpoints": endpoints,
+        })
+
+    async def health(request: Request) -> JSONResponse:
+        return JSONResponse({
+            "status": "ok" if len(sub_apps) > 0 else "degraded",
+            "online": len(sub_apps),
+            "total": len(mcp_configs),
+        })
+
     routes = [
         Route("/", endpoint=index),
         Route("/health", endpoint=health),
     ]
 
-    app = Starlette(routes=routes, lifespan=lifespan)
-    app.add_middleware(MCPRouterMiddleware)
+    for config, mcp_app in sub_apps:
+        mount_path = config["mount"]
+        routes.append(Mount(mount_path, app=mcp_app))
+        logger.info(f"Mounted {config['name']} at {mount_path}/mcp")
+
+    app = Starlette(routes=routes, lifespan=combined_lifespan)
     return app
 
 
