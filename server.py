@@ -44,6 +44,8 @@ BW_AUTH = os.environ.get("BW_AUTH", "garza-bw-mcp-2026")
 BLINKO_URL = os.environ.get("BLINKO_URL", "")
 BLINKO_TOKEN = os.environ.get("BLINKO_TOKEN", "")
 ARCADE_API_KEY = os.environ.get("ARCADE_API_KEY", "")
+MEM0_API_KEY = os.environ.get("MEM0_API_KEY", "")
+MEM0_USER_ID = os.environ.get("MEM0_USER_ID", "jadengarza")
 ARCADE_USER_ID = os.environ.get("ARCADE_USER_ID", "jadengarza@pm.me")
 
 # Compute Close Basic auth
@@ -100,6 +102,22 @@ def create_blinko_mcp() -> FastMCP | None:
     return mcp
 
 
+
+
+def create_mem0_mcp():
+    """Create native mem0 FastMCP server."""
+    key = MEM0_API_KEY
+    user_id = MEM0_USER_ID
+    if not key:
+        return None, None
+
+    from fastmcp.client.transports import StreamableHttpTransport
+    transport = StreamableHttpTransport(
+        url="https://mcp.mem0.ai/mcp/",
+        headers={"Authorization": f"Bearer {key}"}
+    )
+    mcp = FastMCP.as_proxy(backend=transport, name="mem0", version="0.1.0")
+    return mcp, transport
 
 def create_arcade_mcp():
     """Create a native FastMCP server for Arcade gateway with cached tools."""
