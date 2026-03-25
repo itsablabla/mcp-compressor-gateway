@@ -1,0 +1,6 @@
+mcp-compressor==0.1.2
+fastmcp>=2.14.1
+uvicorn[standard]>=0.42.0
+starlette>=1.0.0
+httpx
+anyio
