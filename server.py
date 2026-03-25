@@ -50,6 +50,11 @@ HUBSPOT_ACCESS_TOKEN = os.environ.get("HUBSPOT_ACCESS_TOKEN", "")
 HUBSPOT_REFRESH_TOKEN = os.environ.get("HUBSPOT_REFRESH_TOKEN", "")
 HUBSPOT_CLIENT_ID = os.environ.get("HUBSPOT_CLIENT_ID", "d6c691af-8578-4be4-aecf-93bea6b06e9e")
 HUBSPOT_CLIENT_SECRET = os.environ.get("HUBSPOT_CLIENT_SECRET", "cfd8417b-a5bd-4cbd-b989-453ef38df741")
+RAILWAY_API_TOKEN = os.environ.get("RAILWAY_API_TOKEN", "")
+NANGO_API_KEY = os.environ.get("NANGO_API_KEY", "")
+PROTON_MCP_API_KEY = os.environ.get("PROTON_MCP_API_KEY", "")
+BEEPER_API_URL = os.environ.get("BEEPER_API_URL", "")
+BEEPER_ACCESS_TOKEN = os.environ.get("BEEPER_ACCESS_TOKEN", "")
 MEM0_USER_ID = os.environ.get("MEM0_USER_ID", "jadengarza")
 ARCADE_USER_ID = os.environ.get("ARCADE_USER_ID", "jadengarza@pm.me")
 
@@ -243,6 +248,133 @@ def create_hubspot_mcp():
 
     return mcp, None
 
+
+def create_beeper_mcp():
+    """Native Beeper MCP using REST API."""
+    base = BEEPER_API_URL
+    token = BEEPER_ACCESS_TOKEN
+    if not base or not token:
+        return None, None
+    mcp = FastMCP(name="beeper", instructions="Beeper unified messaging - search chats, send messages across WhatsApp, Telegram, Signal, Slack, Instagram.")
+    @mcp.tool()
+    async def beeper_search(query: str) -> dict:
+        """Search Beeper chats and messages."""
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post(f"{base}/v1/search", headers={"Authorization": f"Bearer {token}"}, json={"query": query, "limit": 10})
+            return r.json()
+    @mcp.tool()
+    async def beeper_send_message(chat_id: str, message: str) -> dict:
+        """Send a message to a Beeper chat."""
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post(f"{base}/v1/messages", headers={"Authorization": f"Bearer {token}"}, json={"chatId": chat_id, "text": message})
+            return r.json()
+    @mcp.tool()
+    async def beeper_get_accounts() -> dict:
+        """List all connected Beeper accounts (WhatsApp, Telegram, Signal, etc)."""
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(f"{base}/v1/accounts", headers={"Authorization": f"Bearer {token}"})
+            return r.json()
+    return mcp, None
+
+
+def create_proton_mcp():
+    """Proton Mail MCP - native httpx."""
+    key = PROTON_MCP_API_KEY
+    if not key:
+        return None, None
+    mcp = FastMCP(name="proton", instructions="Proton Mail - read emails, send, search inbox.")
+    @mcp.tool()
+    async def proton_list_emails(limit: int = 10, folder: str = "inbox") -> dict:
+        """List emails from Proton Mail."""
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.get("https://protonmail-mcp-jg.fly.dev/api/emails",
+                headers={"Authorization": f"Bearer {key}"},
+                params={"limit": limit, "folder": folder})
+            return r.json() if r.status_code == 200 else {"error": r.text[:200]}
+    @mcp.tool()
+    async def proton_send_email(to: str, subject: str, body: str) -> dict:
+        """Send an email via Proton Mail."""
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.post("https://protonmail-mcp-jg.fly.dev/api/send",
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={"to": to, "subject": subject, "body": body})
+            return r.json() if r.status_code == 200 else {"error": r.text[:200]}
+    @mcp.tool()
+    async def proton_search_emails(query: str) -> dict:
+        """Search Proton Mail emails."""
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.get("https://protonmail-mcp-jg.fly.dev/api/search",
+                headers={"Authorization": f"Bearer {key}"},
+                params={"q": query})
+            return r.json() if r.status_code == 200 else {"error": r.text[:200]}
+    return mcp, None
+
+
+def create_railway_mcp():
+    """Railway infrastructure MCP."""
+    token = RAILWAY_API_TOKEN
+    if not token:
+        return None, None
+    mcp = FastMCP(name="railway", instructions="Railway.app infrastructure - list projects, services, deployments, get logs.")
+    @mcp.tool()
+    async def railway_list_projects() -> dict:
+        """List all Railway projects."""
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post("https://backboard.railway.app/graphql/v2",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"query": "{ projects(workspaceId: \"39ce9be8-d38c-4c86-8fa0-098e0e68e27c\") { edges { node { id name } } } }"})
+            projects = r.json().get("data",{}).get("projects",{}).get("edges",[])
+            return {"projects": [p["node"] for p in projects[:20]]}
+    @mcp.tool()
+    async def railway_get_logs(service_id: str, limit: int = 20) -> dict:
+        """Get deployment logs for a Railway service."""
+        async with httpx.AsyncClient(timeout=15) as c:
+            dep_r = await c.post("https://backboard.railway.app/graphql/v2",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"query": f"{{ deployments(input: {{serviceId: \"{service_id}\"}}) {{ edges {{ node {{ id status }} }} }} }}"})
+            deps = dep_r.json().get("data",{}).get("deployments",{}).get("edges",[])
+            if not deps:
+                return {"error": "No deployments found"}
+            dep_id = deps[0]["node"]["id"]
+            log_r = await c.post("https://backboard.railway.app/graphql/v2",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"query": f"{{ deploymentLogs(deploymentId: \"{dep_id}\", limit: {limit}) {{ message }} }}"})
+            logs = log_r.json().get("data",{}).get("deploymentLogs",[])
+            return {"logs": [l["message"] for l in logs]}
+    return mcp, None
+
+
+def create_nango_mcp():
+    """Nango unified integrations - list connections."""
+    key = NANGO_API_KEY
+    if not key:
+        return None, None
+    mcp = FastMCP(name="nango", instructions="Nango unified integrations - 127 connections: WhatsApp, Fireflies, GitHub, Slack, Zendesk and more.")
+    @mcp.tool()
+    async def nango_list_connections() -> dict:
+        """List all Nango OAuth connections."""
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get("https://api.nango.dev/connection?limit=100",
+                headers={"Authorization": f"Bearer {key}"})
+            conns = r.json().get("connections",[])
+            providers = {}
+            for conn in conns:
+                pk = conn.get("provider_config_key","")
+                if pk not in providers:
+                    providers[pk] = conn.get("connection_id","")
+            return {"total": len(conns), "integrations": providers}
+    @mcp.tool()
+    async def nango_get_token(provider_config_key: str, connection_id: str = "jaden-garza") -> dict:
+        """Get OAuth token for a Nango integration."""
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(f"https://api.nango.dev/connection/{connection_id}",
+                headers={"Authorization": f"Bearer {key}"},
+                params={"provider_config_key": provider_config_key})
+            d = r.json()
+            creds = d.get("credentials",{})
+            return {"type": creds.get("type"), "token": creds.get("access_token","")[:20]+"..." if creds.get("access_token") else creds.get("apiKey","")[:20]+"..."}
+    return mcp, None
+
 def create_arcade_mcp():
     """Create a native FastMCP server for Arcade gateway with cached tools."""
     key = ARCADE_API_KEY
@@ -419,6 +551,34 @@ def create_app() -> Starlette:
         hs_app = hs_mcp.http_app(path="/mcp", stateless_http=True)
         sub_apps.append(({"name":"hubspot","mount":"/hubspot","url":"https://api.hubapi.com/"}, hs_app))
         logger.info("Added HubSpot CRM MCP to sub_apps")
+
+    # Add Beeper MCP
+    beeper_mcp, _ = create_beeper_mcp()
+    if beeper_mcp:
+        beeper_app = beeper_mcp.http_app(path="/mcp", stateless_http=True)
+        sub_apps.append(({"name":"beeper","mount":"/beeper","url":BEEPER_API_URL}, beeper_app))
+        logger.info("Added Beeper MCP to sub_apps")
+
+    # Add Railway MCP
+    rw_mcp, _ = create_railway_mcp()
+    if rw_mcp:
+        rw_app = rw_mcp.http_app(path="/mcp", stateless_http=True)
+        sub_apps.append(({"name":"railway","mount":"/railway","url":"https://backboard.railway.app"}, rw_app))
+        logger.info("Added Railway MCP to sub_apps")
+
+    # Add Proton Mail MCP
+    proton_mcp, _ = create_proton_mcp()
+    if proton_mcp:
+        proton_app = proton_mcp.http_app(path="/mcp", stateless_http=True)
+        sub_apps.append(({"name":"proton","mount":"/proton","url":"https://protonmail-mcp-jg.fly.dev"}, proton_app))
+        logger.info("Added Proton Mail MCP to sub_apps")
+
+    # Add Nango MCP
+    nango_mcp, _ = create_nango_mcp()
+    if nango_mcp:
+        nango_app = nango_mcp.http_app(path="/mcp", stateless_http=True)
+        sub_apps.append(({"name":"nango","mount":"/nango","url":"https://api.nango.dev"}, nango_app))
+        logger.info("Added Nango MCP to sub_apps")
 
     # Add native Arcade MCP gateway
     arcade_mcp, _ = create_arcade_mcp()
