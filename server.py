@@ -260,12 +260,12 @@ def create_app() -> Starlette:
         Route("/health", endpoint=health),
     ]
 
-    # Mount native Blinko MCP if configured
+    # Mount native Blinko MCP if configured - must be in sub_apps for lifespan
     blinko_mcp = create_blinko_mcp()
     if blinko_mcp:
         blinko_app = blinko_mcp.http_app(path="/mcp", stateless_http=True)
-        routes.append(Mount("/blinko", app=blinko_app))
-        logger.info("Mounted blinko native MCP at /blinko/mcp")
+        sub_apps.append(({"name":"blinko","mount":"/blinko","url":BLINKO_URL}, blinko_app))
+        logger.info("Added Blinko native MCP to sub_apps")
 
     for config, mcp_app in sub_apps:
         mount_path = config["mount"]
