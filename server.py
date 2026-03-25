@@ -102,45 +102,27 @@ def create_blinko_mcp() -> FastMCP | None:
 
 
 def create_arcade_mcp():
-    """Create a native FastMCP server for Arcade gateway with cached tools."""
+    """Create Arcade MCP proxy using StdioTransport + mcp-remote (handles session)."""
     key = ARCADE_API_KEY
     user_id = ARCADE_USER_ID
     if not key:
         return None, None
 
-    mcp = FastMCP(name="arcade", instructions="Arcade MCP Gateway with GitHub, Gmail, Google Calendar, Slack, Firecrawl and more tools.")
+    from fastmcp.client.transports import StdioTransport
 
-    @mcp.tool()
-    async def arcade_get_tool_schema(tool_name: str) -> dict:
-        """Get the input schema for a specific Arcade tool. Call this before invoke_tool to understand parameters."""
-        async with httpx.AsyncClient() as client:
-            r = await client.get(
-                f"https://api.arcade.dev/v1/tools/{tool_name}",
-                headers={"Authorization": f"Bearer {key}"},
-                timeout=15
-            )
-            if r.status_code != 200:
-                return {"error": f"Tool not found: {tool_name}"}
-            return r.json()
+    transport = StdioTransport(
+        command="npx",
+        args=[
+            "-y", "mcp-remote",
+            "https://api.arcade.dev/mcp/garza-tools",
+            "--header", f"Authorization: Bearer {key}",
+            "--header", f"Arcade-User-ID: {user_id}",
+            "--transport", "streamable-http"
+        ]
+    )
 
-    @mcp.tool()
-    async def arcade_invoke_tool(tool_name: str, tool_input: dict = {}) -> dict:
-        """Execute an Arcade tool. Available tools include GitHub, Gmail, GoogleCalendar, Slack, Firecrawl and more.
-        
-        Popular tools: Github_CreateIssue, Github_SearchRepositories, Gmail_SendEmail, Gmail_SearchEmails,
-        GoogleCalendar_CreateEvent, GoogleCalendar_ListEvents, Slack_SendMessage, Firecrawl_ScrapeUrl,
-        Search_SearchWeb, Search_SearchGoogle
-        """
-        async with httpx.AsyncClient() as client:
-            r = await client.post(
-                "https://api.arcade.dev/v1/tools/execute",
-                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                json={"tool_name": tool_name, "inputs": tool_input, "user_id": user_id},
-                timeout=30
-            )
-            return r.json()
-
-    return mcp, None
+    mcp = FastMCP.as_proxy(backend=transport, name="arcade", version="0.1.0")
+    return mcp, transport
 
 def get_mcp_configs():
     return [
@@ -257,12 +239,12 @@ def create_app() -> Starlette:
         sub_apps.append(({"name":"blinko","mount":"/blinko","url":BLINKO_URL}, blinko_app))
         logger.info("Added Blinko native MCP to sub_apps")
 
-    # Add native Arcade MCP gateway
+    # Add native Arcade MCP gateway via mcp-remote stdio proxy
     arcade_mcp, _ = create_arcade_mcp()
     if arcade_mcp:
         arcade_app = arcade_mcp.http_app(path="/mcp", stateless_http=True)
         sub_apps.append(({"name":"arcade","mount":"/arcade","url":"https://api.arcade.dev/mcp/garza-tools"}, arcade_app))
-        logger.info("Added Arcade native MCP to sub_apps")
+        logger.info("Added Arcade stdio proxy to sub_apps")
 
     # Create combined lifespan that activates each sub-app's lifespan
     sub_app_list = [app for _, app in sub_apps]
