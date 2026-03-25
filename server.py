@@ -31,6 +31,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
+import httpx
 logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,55 @@ BLINKO_TOKEN = os.environ.get("BLINKO_TOKEN", "")
 # Compute Close Basic auth
 close_auth = base64.b64encode(f"{CLOSE_API_KEY}:".encode()).decode()
 
+
+
+
+def create_blinko_mcp() -> FastMCP | None:
+    """Create a native FastMCP server for Blinko REST API."""
+    blinko_url = BLINKO_URL
+    blinko_token = BLINKO_TOKEN
+    if not blinko_url or not blinko_token:
+        return None
+
+    mcp = FastMCP(name="blinko", instructions="Blinko note-taking MCP. Create, search, and manage notes.")
+
+    @mcp.tool()
+    async def blinko_create_note(content: str, type: int = 0) -> dict:
+        """Create a new note in Blinko. type=0 for flash note, type=1 for regular note."""
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                f"{blinko_url}/api/v1/note/upsert",
+                headers={"Authorization": f"Bearer {blinko_token}", "Content-Type": "application/json"},
+                json={"content": content, "type": type},
+                timeout=15
+            )
+            return r.json()
+
+    @mcp.tool()
+    async def blinko_search_notes(query: str, page: int = 1, size: int = 10) -> dict:
+        """Search notes in Blinko."""
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                f"{blinko_url}/api/v1/note/list",
+                headers={"Authorization": f"Bearer {blinko_token}", "Content-Type": "application/json"},
+                json={"searchText": query, "page": page, "size": size, "type": -1},
+                timeout=15
+            )
+            return r.json()
+
+    @mcp.tool()
+    async def blinko_list_notes(page: int = 1, size: int = 20, type: int = -1) -> dict:
+        """List notes from Blinko. type=-1 for all, type=0 for flash, type=1 for regular."""
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                f"{blinko_url}/api/v1/note/list",
+                headers={"Authorization": f"Bearer {blinko_token}", "Content-Type": "application/json"},
+                json={"page": page, "size": size, "type": type},
+                timeout=15
+            )
+            return r.json()
+
+    return mcp
 
 def get_mcp_configs():
     return [
@@ -98,13 +148,7 @@ def get_mcp_configs():
             "headers": {"Authorization": f"Bearer {BW_AUTH}"},
             "transport": "http",
         },
-    ] + ([{
-        "name": "blinko",
-        "mount": "/blinko",
-        "url": f"{BLINKO_URL}/mcp/sse",
-        "headers": {"Authorization": f"Bearer {BLINKO_TOKEN}"},
-        "transport": "sse",
-    }] if BLINKO_URL and BLINKO_TOKEN else [])
+    ]
 
 
 async def build_compressed_mcp_app(config: dict) -> tuple[Any, str | None]:
@@ -216,6 +260,13 @@ def create_app() -> Starlette:
         Route("/health", endpoint=health),
     ]
 
+    # Mount native Blinko MCP if configured
+    blinko_mcp = create_blinko_mcp()
+    if blinko_mcp:
+        blinko_app = blinko_mcp.http_app(path="/mcp", stateless_http=True)
+        routes.append(Mount("/blinko", app=blinko_app))
+        logger.info("Mounted blinko native MCP at /blinko/mcp")
+
     for config, mcp_app in sub_apps:
         mount_path = config["mount"]
         routes.append(Mount(mount_path, app=mcp_app))
@@ -237,3 +288,4 @@ if __name__ == "__main__":
         port=port,
         log_level="info",
     )
+# Note: Blinko is handled as native FastMCP below
