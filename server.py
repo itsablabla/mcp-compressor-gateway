@@ -205,6 +205,13 @@ def create_app() -> Starlette:
 
     asyncio.run(build_all())
 
+    # Add native Blinko MCP (must be before lifespan is created)
+    blinko_mcp = create_blinko_mcp()
+    if blinko_mcp:
+        blinko_app = blinko_mcp.http_app(path="/mcp", stateless_http=True)
+        sub_apps.append(({"name":"blinko","mount":"/blinko","url":BLINKO_URL}, blinko_app))
+        logger.info("Added Blinko native MCP to sub_apps")
+
     # Create combined lifespan that activates each sub-app's lifespan
     sub_app_list = [app for _, app in sub_apps]
 
@@ -260,12 +267,7 @@ def create_app() -> Starlette:
         Route("/health", endpoint=health),
     ]
 
-    # Mount native Blinko MCP if configured - must be in sub_apps for lifespan
-    blinko_mcp = create_blinko_mcp()
-    if blinko_mcp:
-        blinko_app = blinko_mcp.http_app(path="/mcp", stateless_http=True)
-        sub_apps.append(({"name":"blinko","mount":"/blinko","url":BLINKO_URL}, blinko_app))
-        logger.info("Added Blinko native MCP to sub_apps")
+
 
     for config, mcp_app in sub_apps:
         mount_path = config["mount"]
