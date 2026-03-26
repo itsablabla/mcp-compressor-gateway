@@ -324,6 +324,85 @@ def create_hubspot_mcp():
                 headers={"Authorization":f"Bearer {token}"})
             return r.json()
 
+    @mcp.tool()
+    async def hubspot_list_tasks(limit: int = 20) -> dict:
+        """List HubSpot tasks."""
+        return await hs_list("tasks", ["hs_task_subject","hs_task_body","hs_task_status","hs_task_priority","hs_timestamp"], limit)
+
+    @mcp.tool()
+    async def hubspot_create_task(subject: str, body: str = "", due_date: str = "", owner_id: str = "") -> dict:
+        """Create a HubSpot task."""
+        props = {"hs_task_subject": subject, "hs_task_status": "NOT_STARTED"}
+        if body: props["hs_task_body"] = body
+        if due_date: props["hs_timestamp"] = due_date
+        if owner_id: props["hubspot_owner_id"] = owner_id
+        return await hs_create("tasks", props)
+
+    @mcp.tool()
+    async def hubspot_search_tasks(query: str, limit: int = 10) -> dict:
+        """Search HubSpot tasks."""
+        return await hs_search("tasks", query, ["hs_task_subject","hs_task_body","hs_task_status"], limit)
+
+    @mcp.tool()
+    async def hubspot_list_products(limit: int = 20) -> dict:
+        """List HubSpot products/catalog."""
+        return await hs_list("products", ["name","description","price","hs_sku"], limit)
+
+    @mcp.tool()
+    async def hubspot_list_quotes(limit: int = 10) -> dict:
+        """List HubSpot quotes."""
+        return await hs_list("quotes", ["hs_title","hs_status","hs_expiration_date","hs_quote_amount"], limit)
+
+    @mcp.tool()
+    async def hubspot_create_company(name: str, domain: str = "", industry: str = "", phone: str = "", city: str = "") -> dict:
+        """Create a new HubSpot company."""
+        props = {"name": name}
+        if domain: props["domain"] = domain
+        if industry: props["industry"] = industry
+        if phone: props["phone"] = phone
+        if city: props["city"] = city
+        return await hs_create("companies", props)
+
+    @mcp.tool()
+    async def hubspot_create_ticket(subject: str, content: str = "", priority: str = "MEDIUM") -> dict:
+        """Create a support ticket in HubSpot."""
+        return await hs_create("tickets", {"subject": subject, "content": content, "hs_ticket_priority": priority})
+
+    @mcp.tool()
+    async def hubspot_get_contact(contact_id: str) -> dict:
+        """Get full details of a specific HubSpot contact."""
+        token = await get_token()
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(f"https://api.hubapi.com/crm/v3/objects/contacts/{contact_id}",
+                headers={"Authorization":f"Bearer {token}"},
+                params={"properties": "email,firstname,lastname,phone,company,lifecyclestage,createdate,lastmodifieddate"})
+            return r.json()
+
+    @mcp.tool()
+    async def hubspot_update_contact(contact_id: str, properties: dict) -> dict:
+        """Update a HubSpot contact's properties."""
+        token = await get_token()
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.patch(f"https://api.hubapi.com/crm/v3/objects/contacts/{contact_id}",
+                headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"},
+                json={"properties": properties})
+            return r.json()
+
+    @mcp.tool()
+    async def hubspot_update_deal(deal_id: str, properties: dict) -> dict:
+        """Update a HubSpot deal's properties."""
+        token = await get_token()
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.patch(f"https://api.hubapi.com/crm/v3/objects/deals/{deal_id}",
+                headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"},
+                json={"properties": properties})
+            return r.json()
+
+    @mcp.tool()
+    async def hubspot_list_subscriptions(limit: int = 10) -> dict:
+        """List HubSpot subscriptions."""
+        return await hs_list("subscriptions", ["hs_subscription_type","hs_billing_period","hs_recurring_billing_amount"], limit)
+
     return mcp, None
 
 
