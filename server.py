@@ -403,6 +403,86 @@ def create_hubspot_mcp():
         """List HubSpot subscriptions."""
         return await hs_list("subscriptions", ["hs_subscription_type","hs_billing_period","hs_recurring_billing_amount"], limit)
 
+
+    @mcp.tool()
+    async def hubspot_api(method: str, path: str, body: dict = {}) -> dict:
+        """Direct HubSpot API call. method=GET/POST/PATCH/DELETE, path=/crm/v3/objects/contacts etc.
+        
+        Examples:
+        - GET /crm/v3/objects/contacts?limit=10
+        - POST /crm/v3/objects/contacts {"properties":{"email":"test@example.com"}}
+        - GET /marketing/v3/emails/statistics/summary
+        - GET /analytics/v2/reports/total-all/summary
+        - GET /crm/v3/pipelines/deals
+        - GET /cms/v3/site-search/search?q=nomad
+        """
+        token = await get_token()
+        base = "https://api.hubapi.com"
+        url = base + path if path.startswith("/") else path
+        async with httpx.AsyncClient(timeout=30) as c:
+            headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+            if method.upper() == "GET":
+                r = await c.get(url, headers=headers)
+            elif method.upper() == "POST":
+                r = await c.post(url, headers=headers, json=body)
+            elif method.upper() == "PATCH":
+                r = await c.patch(url, headers=headers, json=body)
+            elif method.upper() == "DELETE":
+                r = await c.delete(url, headers=headers)
+            else:
+                return {"error": f"Unsupported method: {method}"}
+            try:
+                return r.json()
+            except:
+                return {"status": r.status_code, "text": r.text[:500]}
+
+    @mcp.tool()
+    async def hubspot_bulk_create_contacts(contacts: list) -> dict:
+        """Bulk create multiple contacts at once. contacts=[{email,firstname,lastname,phone,company}]"""
+        token = await get_token()
+        inputs = [{"properties": c} for c in contacts]
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.post("https://api.hubapi.com/crm/v3/objects/contacts/batch/create",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"inputs": inputs})
+            d = r.json()
+            return {"created": len(d.get("results",[])), "status": d.get("status"), "results": d.get("results",[])}
+
+    @mcp.tool()
+    async def hubspot_bulk_update_contacts(updates: list) -> dict:
+        """Bulk update contacts. updates=[{id: "123", properties: {lifecyclestage: "customer"}}]"""
+        token = await get_token()
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.post("https://api.hubapi.com/crm/v3/objects/contacts/batch/update",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                json={"inputs": updates})
+            d = r.json()
+            return {"updated": len(d.get("results",[])), "status": d.get("status")}
+
+    @mcp.tool()
+    async def hubspot_associate(from_type: str, from_id: str, to_type: str, to_id: str) -> dict:
+        """Associate two HubSpot objects. e.g. associate a contact with a deal.
+        from_type/to_type: contacts, companies, deals, tickets"""
+        token = await get_token()
+        type_map = {"contacts":"1","companies":"2","deals":"3","tickets":"4"}
+        assoc_type = f"{type_map.get(from_type,'1')}"
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.put(
+                f"https://api.hubapi.com/crm/v3/objects/{from_type}/{from_id}/associations/{to_type}/{to_id}/{assoc_type}",
+                headers={"Authorization": f"Bearer {token}"})
+            return {"status": r.status_code, "associated": r.status_code in [200, 201, 204]}
+
+    @mcp.tool()
+    async def hubspot_get_analytics(date_range: str = "LAST_30_DAYS") -> dict:
+        """Get HubSpot analytics summary. date_range: LAST_7_DAYS, LAST_30_DAYS, LAST_90_DAYS"""
+        token = await get_token()
+        async with httpx.AsyncClient(timeout=15) as c:
+            # Traffic analytics
+            r = await c.get("https://api.hubapi.com/analytics/v2/reports/total-all/summary",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"start_timestamp": "2026-01-01", "end_timestamp": "2026-03-31"})
+            return r.json() if r.status_code == 200 else {"error": r.text[:200]}
+
     return mcp, None
 
 
