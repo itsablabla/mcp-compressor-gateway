@@ -194,13 +194,12 @@ def create_fireflies_mcp():
 
 
 def create_hubspot_mcp():
-    """Create HubSpot CRM native FastMCP."""
+    """Create full HubSpot CRM MCP with all objects."""
     access_token = HUBSPOT_ACCESS_TOKEN
     refresh_token = HUBSPOT_REFRESH_TOKEN
     if not access_token and not refresh_token:
         return None, None
 
-    # Get fresh token if needed
     _token = [access_token]
 
     async def get_token():
@@ -213,38 +212,117 @@ def create_hubspot_mcp():
             _token[0] = r.json().get("access_token","")
             return _token[0]
 
-    mcp = FastMCP(name="hubspot", instructions="HubSpot CRM — search contacts, companies, deals, owners.")
-
-    @mcp.tool()
-    async def hubspot_search_contacts(query: str, limit: int = 10) -> dict:
-        """Search HubSpot CRM contacts."""
+    async def hs_search(obj_type, query, props, limit=10):
         token = await get_token()
         async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.post("https://api.hubapi.com/crm/v3/objects/contacts/search",
+            r = await c.post(f"https://api.hubapi.com/crm/v3/objects/{obj_type}/search",
                 headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"},
-                json={"query":query,"limit":limit,"properties":["email","firstname","lastname","phone","company"]})
+                json={"query":query,"limit":limit,"properties":props})
             d = r.json()
             return {"results": d.get("results",[]), "total": d.get("total",0)}
 
-    @mcp.tool()
-    async def hubspot_search_companies(query: str, limit: int = 10) -> dict:
-        """Search HubSpot CRM companies."""
+    async def hs_list(obj_type, props, limit=20):
         token = await get_token()
         async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.post("https://api.hubapi.com/crm/v3/objects/companies/search",
+            r = await c.get(f"https://api.hubapi.com/crm/v3/objects/{obj_type}",
+                headers={"Authorization":f"Bearer {token}"},
+                params={"limit":limit,"properties":",".join(props)})
+            return r.json()
+
+    async def hs_create(obj_type, properties):
+        token = await get_token()
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post(f"https://api.hubapi.com/crm/v3/objects/{obj_type}",
                 headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"},
-                json={"query":query,"limit":limit,"properties":["name","domain","industry","phone"]})
-            return {"results": r.json().get("results",[]), "total": r.json().get("total",0)}
+                json={"properties":properties})
+            return r.json()
+
+    mcp = FastMCP(name="hubspot", instructions="HubSpot CRM — full access to contacts, companies, deals, tickets, notes, tasks, calls, emails, meetings, line items, products.")
+
+    @mcp.tool()
+    async def hubspot_search_contacts(query: str, limit: int = 10) -> dict:
+        """Search contacts by name, email, phone, or company."""
+        return await hs_search("contacts", query, ["email","firstname","lastname","phone","company","lifecyclestage"], limit)
+
+    @mcp.tool()
+    async def hubspot_search_companies(query: str, limit: int = 10) -> dict:
+        """Search companies by name, domain, or industry."""
+        return await hs_search("companies", query, ["name","domain","industry","phone","city","state","annualrevenue"], limit)
 
     @mcp.tool()
     async def hubspot_search_deals(query: str, limit: int = 10) -> dict:
-        """Search HubSpot CRM deals."""
+        """Search deals by name, stage, or amount."""
+        return await hs_search("deals", query, ["dealname","amount","dealstage","closedate","pipeline"], limit)
+
+    @mcp.tool()
+    async def hubspot_search_tickets(query: str, limit: int = 10) -> dict:
+        """Search support tickets."""
+        return await hs_search("tickets", query, ["subject","content","hs_pipeline_stage","hs_ticket_priority"], limit)
+
+    @mcp.tool()
+    async def hubspot_list_contacts(limit: int = 20) -> dict:
+        """List recent contacts."""
+        return await hs_list("contacts", ["email","firstname","lastname","phone","company","createdate"], limit)
+
+    @mcp.tool()
+    async def hubspot_list_deals(limit: int = 20) -> dict:
+        """List recent deals."""
+        return await hs_list("deals", ["dealname","amount","dealstage","closedate","pipeline"], limit)
+
+    @mcp.tool()
+    async def hubspot_create_contact(email: str, firstname: str = "", lastname: str = "", phone: str = "", company: str = "") -> dict:
+        """Create a new HubSpot contact."""
+        props = {"email": email}
+        if firstname: props["firstname"] = firstname
+        if lastname: props["lastname"] = lastname
+        if phone: props["phone"] = phone
+        if company: props["company"] = company
+        return await hs_create("contacts", props)
+
+    @mcp.tool()
+    async def hubspot_create_deal(dealname: str, amount: str = "", dealstage: str = "appointmentscheduled", closedate: str = "") -> dict:
+        """Create a new HubSpot deal."""
+        props = {"dealname": dealname, "dealstage": dealstage}
+        if amount: props["amount"] = amount
+        if closedate: props["closedate"] = closedate
+        return await hs_create("deals", props)
+
+    @mcp.tool()
+    async def hubspot_create_note(body: str, contact_id: str = "") -> dict:
+        """Create a note in HubSpot, optionally associated with a contact."""
         token = await get_token()
         async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.post("https://api.hubapi.com/crm/v3/objects/deals/search",
+            r = await c.post("https://api.hubapi.com/crm/v3/objects/notes",
                 headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"},
-                json={"query":query,"limit":limit,"properties":["dealname","amount","dealstage","closedate"]})
-            return {"results": r.json().get("results",[]), "total": r.json().get("total",0)}
+                json={"properties":{"hs_note_body":body}})
+            note = r.json()
+            if contact_id and note.get("id"):
+                await c.put(f"https://api.hubapi.com/crm/v3/objects/notes/{note['id']}/associations/contacts/{contact_id}/202",
+                    headers={"Authorization":f"Bearer {token}"})
+            return note
+
+    @mcp.tool()
+    async def hubspot_get_owners() -> dict:
+        """List HubSpot owners/sales reps."""
+        token = await get_token()
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get("https://api.hubapi.com/crm/v3/owners",
+                headers={"Authorization":f"Bearer {token}"})
+            return {"owners": r.json().get("results",[])}
+
+    @mcp.tool()
+    async def hubspot_search_notes(query: str, limit: int = 10) -> dict:
+        """Search notes in HubSpot."""
+        return await hs_search("notes", query, ["hs_note_body","hs_timestamp"], limit)
+
+    @mcp.tool()
+    async def hubspot_get_deal_pipeline() -> dict:
+        """Get deal pipeline stages."""
+        token = await get_token()
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get("https://api.hubapi.com/crm/v3/pipelines/deals",
+                headers={"Authorization":f"Bearer {token}"})
+            return r.json()
 
     return mcp, None
 
