@@ -583,43 +583,24 @@ def create_railway_mcp():
 
 
 
+
 def create_fastio_mcp():
     """Fast.io MCP - file storage, workspaces, AI RAG, tasks."""
     key = FASTIO_API_KEY
     if not key:
         return None, None
 
-    _session = [None]
-
-    async def get_session():
-        if _session[0]:
-            return _session[0]
-        async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.post(f"https://mcp.fast.io/mcp?key={key}",
-                headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream"},
-                content=json.dumps({"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"gateway","version":"1.0"}},"id":1}))
-            sid = r.headers.get("mcp-session-id","")
-            _session[0] = sid
-            return sid
-
-    mcp = FastMCP(name="fastio", instructions="Fast.io file storage and AI workspaces. Upload files, manage storage, create workspaces, run AI RAG chats on documents, manage tasks and approvals.")
-
-    async def fastio_call(tool_name: str, action: str, params: dict = None) -> dict:
-        """Call any Fast.io MCP tool.
-        
-        tool_name: auth, upload, user, org, workspace, share, storage, download, ai, comment, task, todo, approval, worklog
-        action: depends on tool (e.g. storage action=list, ai action=chat)
-        params: tool-specific parameters
-        
-        Examples:
-        - List files: tool_name=storage, action=list, params={folder_id: null}
-        - AI chat: tool_name=ai, action=chat-create, params={workspace_id: "xxx", message: "summarize docs"}
-        - List workspaces: tool_name=workspace, action=list
-        - Create task: tool_name=task, action=create, params={title: "Review contracts"}
-        """
-        sid = await get_session()
-        p = params or {}
+    async def _fastio(tool_name, action, params=None):
+        """Internal helper - NOT a mcp.tool."""
+        from contextlib import asynccontextmanager
         async with httpx.AsyncClient(timeout=30) as c:
+            # Get session
+            init_r = await c.post(f"https://mcp.fast.io/mcp?key={key}",
+                headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream"},
+                content=json.dumps({"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"gw","version":"1.0"}},"id":1}))
+            sid = init_r.headers.get("mcp-session-id","")
+            # Call tool
+            p = params or {}
             r = await c.post(f"https://mcp.fast.io/mcp?key={key}",
                 headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream","Mcp-Session-Id":sid},
                 content=json.dumps({"jsonrpc":"2.0","method":"tools/call","params":{"name":tool_name,"arguments":{"action":action,**p}},"id":3}))
@@ -630,31 +611,35 @@ def create_fastio_mcp():
                     except: pass
             return {"raw": r.text[:500]}
 
+    mcp = FastMCP(name="fastio", instructions="Fast.io file storage, workspaces, AI RAG, tasks, approvals.")
+
     @mcp.tool()
     async def fastio_list_workspaces() -> dict:
         """List all Fast.io workspaces."""
-        return await fastio_call("workspace", "list")
+        return await _fastio("workspace", "list")
 
     @mcp.tool()
     async def fastio_list_files(folder_id: str = "") -> dict:
         """List files in Fast.io storage."""
-        p = {}
-        if folder_id: p["folder_id"] = folder_id
-        return await fastio_call("storage", "list", p if p else None)
+        p = {"folder_id": folder_id} if folder_id else {}
+        return await _fastio("storage", "list", p if p else None)
 
     @mcp.tool()
     async def fastio_ai_chat(workspace_id: str, message: str) -> dict:
-        """Chat with AI about documents in a Fast.io workspace (RAG)."""
-        return await fastio_call("ai", "chat-create", {"workspace_id": workspace_id, "message": message})
+        """Chat with AI about documents in a Fast.io workspace."""
+        return await _fastio("ai", "chat-create", {"workspace_id": workspace_id, "message": message})
 
     @mcp.tool()
     async def fastio_api(tool_name: str, action: str, params_json: str = "{}") -> dict:
-        """Call any Fast.io tool directly. tool_name: storage, workspace, share, ai, task, todo, auth, upload, download, comment, event, member, approval, worklog. Pass params as JSON string."""
-        import json as _json
-        p = _json.loads(params_json) if params_json and params_json != "{}" else None
-        return await fastio_call(tool_name, action, p)
+        """Call any Fast.io tool directly.
+        tool_name: storage, workspace, share, ai, task, todo, auth, upload, download, comment, event, member, approval, worklog
+        Pass params as JSON string e.g. '{"folder_id": "abc"}'
+        """
+        p = json.loads(params_json) if params_json and params_json != "{}" else None
+        return await _fastio(tool_name, action, p)
 
     return mcp, None
+
 
 def create_nango_mcp():
     """Nango unified integrations - list connections."""
