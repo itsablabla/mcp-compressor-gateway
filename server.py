@@ -604,7 +604,6 @@ def create_fastio_mcp():
 
     mcp = FastMCP(name="fastio", instructions="Fast.io file storage and AI workspaces. Upload files, manage storage, create workspaces, run AI RAG chats on documents, manage tasks and approvals.")
 
-    @mcp.tool()
     async def fastio_call(tool_name: str, action: str, params: dict = None) -> dict:
         """Call any Fast.io MCP tool.
         
@@ -647,6 +646,13 @@ def create_fastio_mcp():
     async def fastio_ai_chat(workspace_id: str, message: str) -> dict:
         """Chat with AI about documents in a Fast.io workspace (RAG)."""
         return await fastio_call("ai", "chat-create", {"workspace_id": workspace_id, "message": message})
+
+    @mcp.tool()
+    async def fastio_api(tool_name: str, action: str, params_json: str = "{}") -> dict:
+        """Call any Fast.io tool directly. tool_name: storage, workspace, share, ai, task, todo, auth, upload, download, comment, event, member, approval, worklog. Pass params as JSON string."""
+        import json as _json
+        p = _json.loads(params_json) if params_json and params_json != "{}" else None
+        return await fastio_call(tool_name, action, p)
 
     return mcp, None
 
