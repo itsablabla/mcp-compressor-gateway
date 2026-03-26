@@ -605,7 +605,7 @@ def create_fastio_mcp():
     mcp = FastMCP(name="fastio", instructions="Fast.io file storage and AI workspaces. Upload files, manage storage, create workspaces, run AI RAG chats on documents, manage tasks and approvals.")
 
     @mcp.tool()
-    async def fastio_call(tool_name: str, action: str, params: dict = {}) -> dict:
+    async def fastio_call(tool_name: str, action: str, params: dict = None) -> dict:
         """Call any Fast.io MCP tool.
         
         tool_name: auth, upload, user, org, workspace, share, storage, download, ai, comment, task, todo, approval, worklog
@@ -619,10 +619,11 @@ def create_fastio_mcp():
         - Create task: tool_name=task, action=create, params={title: "Review contracts"}
         """
         sid = await get_session()
+        p = params or {}
         async with httpx.AsyncClient(timeout=30) as c:
             r = await c.post(f"https://mcp.fast.io/mcp?key={key}",
                 headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream","Mcp-Session-Id":sid},
-                content=json.dumps({"jsonrpc":"2.0","method":"tools/call","params":{"name":tool_name,"arguments":{"action":action,**params}},"id":3}))
+                content=json.dumps({"jsonrpc":"2.0","method":"tools/call","params":{"name":tool_name,"arguments":{"action":action,**p}},"id":3}))
             for line in r.text.split("\n"):
                 if line.startswith("data:"):
                     try:
@@ -638,9 +639,9 @@ def create_fastio_mcp():
     @mcp.tool()
     async def fastio_list_files(folder_id: str = "") -> dict:
         """List files in Fast.io storage."""
-        params = {}
-        if folder_id: params["folder_id"] = folder_id
-        return await fastio_call("storage", "list", params)
+        p = {}
+        if folder_id: p["folder_id"] = folder_id
+        return await fastio_call("storage", "list", p if p else None)
 
     @mcp.tool()
     async def fastio_ai_chat(workspace_id: str, message: str) -> dict:
