@@ -55,6 +55,7 @@ NANGO_API_KEY = os.environ.get("NANGO_API_KEY", "")
 PROTON_MCP_API_KEY = os.environ.get("PROTON_MCP_API_KEY", "")
 BEEPER_API_URL = os.environ.get("BEEPER_API_URL", "")
 BEEPER_ACCESS_TOKEN = os.environ.get("BEEPER_ACCESS_TOKEN", "")
+FASTIO_API_KEY = os.environ.get("FASTIO_API_KEY", "")
 MEM0_USER_ID = os.environ.get("MEM0_USER_ID", "jadengarza")
 ARCADE_USER_ID = os.environ.get("ARCADE_USER_ID", "jadengarza@pm.me")
 
@@ -581,6 +582,73 @@ def create_railway_mcp():
     return mcp, None
 
 
+
+def create_fastio_mcp():
+    """Fast.io MCP - file storage, workspaces, AI RAG, tasks."""
+    key = FASTIO_API_KEY
+    if not key:
+        return None, None
+
+    _session = [None]
+
+    async def get_session():
+        if _session[0]:
+            return _session[0]
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.post(f"https://mcp.fast.io/mcp?key={key}",
+                headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream"},
+                content=json.dumps({"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"gateway","version":"1.0"}},"id":1}))
+            sid = r.headers.get("mcp-session-id","")
+            _session[0] = sid
+            return sid
+
+    mcp = FastMCP(name="fastio", instructions="Fast.io file storage and AI workspaces. Upload files, manage storage, create workspaces, run AI RAG chats on documents, manage tasks and approvals.")
+
+    @mcp.tool()
+    async def fastio_call(tool_name: str, action: str, params: dict = {}) -> dict:
+        """Call any Fast.io MCP tool.
+        
+        tool_name: auth, upload, user, org, workspace, share, storage, download, ai, comment, task, todo, approval, worklog
+        action: depends on tool (e.g. storage action=list, ai action=chat)
+        params: tool-specific parameters
+        
+        Examples:
+        - List files: tool_name=storage, action=list, params={folder_id: null}
+        - AI chat: tool_name=ai, action=chat-create, params={workspace_id: "xxx", message: "summarize docs"}
+        - List workspaces: tool_name=workspace, action=list
+        - Create task: tool_name=task, action=create, params={title: "Review contracts"}
+        """
+        sid = await get_session()
+        async with httpx.AsyncClient(timeout=30) as c:
+            r = await c.post(f"https://mcp.fast.io/mcp?key={key}",
+                headers={"Content-Type":"application/json","Accept":"application/json, text/event-stream","Mcp-Session-Id":sid},
+                content=json.dumps({"jsonrpc":"2.0","method":"tools/call","params":{"name":tool_name,"arguments":{"action":action,**params}},"id":3}))
+            for line in r.text.split("\n"):
+                if line.startswith("data:"):
+                    try:
+                        return json.loads(line[5:]).get("result",{})
+                    except: pass
+            return {"raw": r.text[:500]}
+
+    @mcp.tool()
+    async def fastio_list_workspaces() -> dict:
+        """List all Fast.io workspaces."""
+        return await fastio_call("workspace", "list")
+
+    @mcp.tool()
+    async def fastio_list_files(folder_id: str = "") -> dict:
+        """List files in Fast.io storage."""
+        params = {}
+        if folder_id: params["folder_id"] = folder_id
+        return await fastio_call("storage", "list", params)
+
+    @mcp.tool()
+    async def fastio_ai_chat(workspace_id: str, message: str) -> dict:
+        """Chat with AI about documents in a Fast.io workspace (RAG)."""
+        return await fastio_call("ai", "chat-create", {"workspace_id": workspace_id, "message": message})
+
+    return mcp, None
+
 def create_nango_mcp():
     """Nango unified integrations - list connections."""
     key = NANGO_API_KEY
@@ -816,6 +884,13 @@ def create_app() -> Starlette:
         nango_app = nango_mcp.http_app(path="/mcp", stateless_http=True)
         sub_apps.append(({"name":"nango","mount":"/nango","url":"https://api.nango.dev"}, nango_app))
         logger.info("Added Nango MCP to sub_apps")
+
+    # Add Fast.io MCP
+    fastio_mcp, _ = create_fastio_mcp()
+    if fastio_mcp:
+        fastio_app = fastio_mcp.http_app(path="/mcp", stateless_http=True)
+        sub_apps.append(({"name":"fastio","mount":"/fastio","url":"https://mcp.fast.io"}, fastio_app))
+        logger.info("Added Fast.io MCP to sub_apps")
 
     # Add native Arcade MCP gateway
     arcade_mcp, _ = create_arcade_mcp()
